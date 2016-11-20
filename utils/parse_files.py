@@ -2,7 +2,13 @@ import os
 import scipy.io.wavfile as wav
 import numpy as np
 from pipes import quote
-from config import nn_config
+import h5py
+# from sklearn.decomposition import TruncatedSVD
+# from sklearn.decomposition import PCA
+from sklearn.random_projection import SparseRandomProjection
+from sklearn.random_projection import GaussianRandomProjection
+import pickle
+import time
 
 def convert_mp3_to_wav(filename, sample_frequency):
 	ext = filename[-4:]
@@ -109,54 +115,86 @@ def fft_blocks_to_time_blocks(blocks_ft_domain):
 		time_blocks.append(time_block)
 	return time_blocks
 
-def convert_wav_files_to_nptensor(directory, block_size, max_seq_len, out_file, max_files=20, useTimeDomain=False):
+def convert_wav_files_to_nptensor(directory, block_size, max_seq_len, out_dir, useTimeDomain=False):
 	files = []
-	for file in os.listdir(directory):
+	for file in os.listdir(directory+"/wave/"):
 		if file.endswith('.wav'):
-			files.append(directory+file)
+			files.append(directory+"/wave/"+file)
 	chunks_X = []
 	chunks_Y = []
 	num_files = len(files)
-	if(num_files > max_files):
-		num_files = max_files
+	genres = sorted(list(set([file[11:-10] for file in files])))
+	y = []
+	X = []
+	outliers = {genre:0 for genre in genres}
+	# if num_files > 100:
+	# 	num_files = 100
 	for file_idx in xrange(num_files):
 		file = files[file_idx]
 		print 'Processing: ', (file_idx+1),'/',num_files
 		print 'Filename: ', file
-		X, Y = load_training_example(file, block_size, useTimeDomain=useTimeDomain)
-		cur_seq = 0
-		total_seq = len(X)
-		print total_seq
-		print max_seq_len
-		while cur_seq + max_seq_len < total_seq:
-			chunks_X.append(X[cur_seq:cur_seq+max_seq_len])
-			chunks_Y.append(Y[cur_seq:cur_seq+max_seq_len])
-			cur_seq += max_seq_len
-	num_examples = len(chunks_X)
-	num_dims_out = block_size * 2
-	if(useTimeDomain):
-		num_dims_out = block_size
-	out_shape = (num_examples, max_seq_len, num_dims_out)
-	x_data = np.zeros(out_shape)
-	y_data = np.zeros(out_shape)
-	for n in xrange(num_examples):
-		for i in xrange(max_seq_len):
-			x_data[n][i] = chunks_X[n][i]
-			y_data[n][i] = chunks_Y[n][i]
-		print 'Saved example ', (n+1), ' / ',num_examples
-	print 'Flushing to disk...'
+		# X, Y = load_training_example(file, block_size, useTimeDomain=useTimeDomain)
+		x = load_training_example(file, block_size, useTimeDomain=useTimeDomain)
+		if x.shape[0] == 664175:
+			X.append(x)
+			y.append(genres.index(file[11:-10]))
+		else:
+			outliers[file[11:-10]] += 1
+	print(outliers)
+	X = np.array(X)
+	y_data = np.array(y)
+	num_examples = X.shape[0]
+	t1 = time.time()
+	proj = GaussianRandomProjection(n_components=2000, random_state=42)
+	# proj = SparseRandomProjection(n_components=2000, random_state=42)
+	low_dim_X = proj.fit_transform(X)
+	print(time.time() - t1)
+	# x_data = low_dim_X.reshape(num_examples, 20, 100)
+	x_data = low_dim_X
+	# pickle.dump(proj, open('grp_model.sav', 'wb'))
+	# 	cur_seq = 0
+	# 	total_seq = len(X)
+	# 	print total_seq
+	# 	print max_seq_len
+	# 	while cur_seq + max_seq_len < total_seq:
+	# 		chunks_X.append(X[cur_seq:cur_seq+max_seq_len])
+	# 		# chunks_Y.append(Y[cur_seq:cur_seq+max_seq_len])
+	# 		cur_seq += max_seq_len
+	# 		y.append(genres.index(file[11:-10]))
+	# y_data = np.array(y)
+	# num_examples = len(chunks_X)
+	# assert num_examples == y_data.shape[0]
+	# num_dims_out = block_size * 2
+	# if(useTimeDomain):
+	# 	num_dims_out = block_size
+	# out_shape = (num_examples, max_seq_len, num_dims_out)
+	# x_data = np.zeros(out_shape)
+	# print(x_data.shape)
+	# # y_data = np.zeros(out_shape)
+	# for n in xrange(num_examples):
+	# 	for i in xrange(max_seq_len):
+	# 		x_data[n][i] = chunks_X[n][i]
+	# 		# y_data[n][i] = chunks_Y[n][i]
+	# 	print 'Saved example ', (n+1), ' / ',num_examples
+	# print 'Flushing to disk...'
 	mean_x = np.mean(np.mean(x_data, axis=0), axis=0) #Mean across num examples and num timesteps
 	std_x = np.sqrt(np.mean(np.mean(np.abs(x_data-mean_x)**2, axis=0), axis=0)) # STD across num examples and num timesteps
 	std_x = np.maximum(1.0e-8, std_x) #Clamp variance if too tiny
 	x_data[:][:] -= mean_x #Mean 0
 	x_data[:][:] /= std_x #Variance 1
-	y_data[:][:] -= mean_x #Mean 0
-	y_data[:][:] /= std_x #Variance 1
+	# y_data[:][:] -= mean_x #Mean 0
+	# y_data[:][:] /= std_x #Variance 1
 
-	np.save(out_file+'_mean', mean_x)
-	np.save(out_file+'_var', std_x)
-	np.save(out_file+'_x', x_data)
-	np.save(out_file+'_y', y_data)
+	with h5py.File(out_dir+'data.h5', 'w') as h5f:
+		h5f.create_dataset('X', data=x_data)
+		h5f.create_dataset('y', data=y_data)
+		h5f.create_dataset('mean', data=mean_x)
+		h5f.create_dataset('std', data=std_x)
+		h5f.create_dataset('genres', data=genres)
+	# np.save(out_dir+'_mean', mean_x)
+	# np.save(out_dir+'_var', std_x)
+	# np.save(out_dir+'_x', x_data)
+	# np.save(out_dir+'_y', y_data)
 	print 'Done!'
 
 def convert_nptensor_to_wav_files(tensor, indices, filename, useTimeDomain=False):
@@ -169,14 +207,15 @@ def convert_nptensor_to_wav_files(tensor, indices, filename, useTimeDomain=False
 
 def load_training_example(filename, block_size=2048, useTimeDomain=False):
 	data, bitrate = read_wav_as_np(filename)
-	x_t = convert_np_audio_to_sample_blocks(data, block_size)
-	y_t = x_t[1:]
-	y_t.append(np.zeros(block_size)) #Add special end block composed of all zeros
-	if useTimeDomain:
-		return x_t, y_t
-	X = time_blocks_to_fft_blocks(x_t)
-	Y = time_blocks_to_fft_blocks(y_t)
-	return X, Y
+	return data
+	# x_t = convert_np_audio_to_sample_blocks(data, block_size)
+	# y_t = x_t[1:]
+	# y_t.append(np.zeros(block_size)) #Add special end block composed of all zeros
+	# if useTimeDomain:
+	# 	return x_t, y_t
+	# X = time_blocks_to_fft_blocks(x_t)
+	# Y = time_blocks_to_fft_blocks(y_t)
+	# return X, Y
 
 def save_generated_example(filename, generated_sequence, useTimeDomain=False, sample_frequency=44100):
 	if useTimeDomain:

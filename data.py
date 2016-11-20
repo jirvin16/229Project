@@ -1,3 +1,8 @@
-def data_iterator(data_path, max_size, batch_size):
-	for i in range(10):
-		yield np.arange(387000).reshape(batch_size, max_size, 100), np.arange(batch_size)
+import numpy as np
+
+def data_iterator(X, y, batch_size):
+	assert X.shape[0] == y.shape[0]
+	index = 0
+	while index < X.shape[0]:
+		yield X[index:index+batch_size], y[index:index+batch_size]
+		index += batch_size
