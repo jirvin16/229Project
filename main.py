@@ -25,6 +25,7 @@ flags.DEFINE_integer("save_every", 5, "Save every [5] epochs")
 flags.DEFINE_string("model_name", "out", "model name for prefix to checkpoint file [out]")
 flags.DEFINE_boolean("sample", False, "Use sample dataset [False]")
 flags.DEFINE_integer("network_type", 0, "Type of recurrent network. 0 for LSTM, 1 for RNN, 2 for NN [0]")
+flags.DEFINE_string("optimizer", "SGD", "Optimizer [SGD]")
 
 FLAGS = flags.FLAGS
 

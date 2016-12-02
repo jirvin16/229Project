@@ -20,7 +20,7 @@ class AttentionNN(object):
 
 		# Training details
 		self.batch_size            = config.batch_size
-		self.max_size              = 20
+		# self.max_size              = 10
 		self.epochs                = config.epochs
 		self.current_learning_rate = config.init_learning_rate
 		self.grad_max_norm 		   = config.grad_max_norm
@@ -29,7 +29,7 @@ class AttentionNN(object):
 		self.use_attention 		   = config.use_attention and self.use_lstm
 		self.dropout 			   = config.dropout
 		self.random_seed  		   = config.random_seed
-		self.optimizer 		   	   = "SGD"
+		self.optimizer 		   	   = config.optimizer
 		self.optim 				   = None
 		self.loss                  = None
 
@@ -85,21 +85,24 @@ class AttentionNN(object):
 			timestep_X  	  = X
 		else:
 			assert X.shape[1] % self.embedding_dim == 0
-			timesteps 		  = X.shape[1] / self.embedding_dim
+			timesteps 		  = int(X.shape[1] / self.embedding_dim)
+			self.max_size     = timesteps
 			timestep_X		  = X.reshape(X.shape[0], timesteps, self.embedding_dim)
 
 		np.random.seed(self.random_seed)
+		train_size 	      = int(0.7 * X.shape[0])
+		validation_size   = int(0.15 * X.shape[0])
 		permutation 	  = np.random.permutation(X.shape[0])
 		shuffled_X 	      = timestep_X[permutation]
 		shuffled_genres   = genres[permutation]
-		self.X_train 	  = shuffled_X[:650]
-		self.y_train 	  = shuffled_genres[:650]
+		self.X_train 	  = shuffled_X[:train_size]
+		self.y_train 	  = shuffled_genres[:train_size]
 		if self.validate:
-			self.X_test   = shuffled_X[650:750]
-			self.y_test   = shuffled_genres[650:750]
+			self.X_test   = shuffled_X[train_size:train_size+validation_size]
+			self.y_test   = shuffled_genres[train_size:train_size+validation_size]
 		else:
-			self.X_test   = shuffled_X[750:]
-			self.y_test	  = shuffled_genres[750:]
+			self.X_test   = shuffled_X[train_size+validation_size:]
+			self.y_test	  = shuffled_genres[train_size+validation_size:]
 
 		# Model placeholders
 		# Going to need to pad inputs so that they are all the same length
