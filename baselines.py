@@ -15,13 +15,13 @@ with h5py.File('data_vectors/data.h5') as hf:
 	mean   	 		 = hf["mean"]
 	std    	 		 = hf["std"]
 
+X = np.transpose(X, [0, 2, 1])
 X = X.reshape(X.shape[0], X.shape[1] * X.shape[2])
-
 random_seed 	= 42
 np.random.seed(random_seed)
 
 train_size 	    = int(0.7 * X.shape[0])
-validation_size = int(0.15 * X.shape[0])
+validation_size = int(0.1 * X.shape[0])
 permutation 	= np.random.permutation(X.shape[0])
 shuffled_X 	    = X[permutation]
 shuffled_genres = genres[permutation]
@@ -69,32 +69,33 @@ def create_logistic_regression(params):
 		solver = 'liblinear'
 	return LogisticRegression(multi_class=multi_class, solver=solver)
 
-linear_params = [{}, {'penalty':'l1', 'dual': False}]
+with open("score_baselines.txt", 'w') as outfile:
 
-print("Linear SVM")
-for param in linear_params:
-	print(param)
-	clf = create_linear_svm(param)
-	clf.fit(X_train, y_train)
-	print("Test Score: ", clf.score(X_test, y_test))
+	linear_params = [{}, {'penalty':'l1', 'dual': False}]
 
-params = [{}, {'decision_function_shape':'ovr', 'kernel': 'poly'}, {'decision_function_shape':'ovr', 'kernel': 'sigmoid'}]
+	print("Linear SVM", file=outfile)
+	for param in linear_params:
+		print(param, file=outfile)
+		clf = create_linear_svm(param)
+		clf.fit(X_train, y_train)
+		print("Test Score: ", clf.score(X_test, y_test), file=outfile)
 
-print("Nonlinear SVM")
-for param in params:
-	print(param)
-	clf = create_svm(param)
-	clf.fit(X_train, y_train)
-	print("Test Score: ", clf.score(X_test, y_test))
+	params = [{}, {'decision_function_shape':'ovr', 'kernel': 'poly'}, {'decision_function_shape':'ovr', 'kernel': 'sigmoid'}]
 
-print("Logistic Regression")
-log_params = [{}, {'multi_class':'multinomial', 'solver':'newton-cg'}]
-for param in log_params:
-	print(param)
-	clf = create_logistic_regression(param)
-	clf.fit(X_train, y_train)
-	print("Test Score: ", clf.score(X_test, y_test))
+	print("Nonlinear SVM", file=outfile)
+	for param in params:
+		print(param, file=outfile)
+		clf = create_svm(param)
+		clf.fit(X_train, y_train)
+		print("Test Score: ", clf.score(X_test, y_test), file=outfile)
 
+	print("Logistic Regression", file=outfile)
+	log_params = [{}, {'multi_class':'multinomial', 'solver':'newton-cg'}]
+	for param in log_params:
+		print(param, file=outfile)
+		clf = create_logistic_regression(param)
+		clf.fit(X_train, y_train)
+		print("Test Score: ", clf.score(X_test, y_test), file=outfile)
 
 
 

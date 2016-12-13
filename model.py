@@ -2,6 +2,7 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
+from tensorflow.python.ops import rnn
 import numpy as np
 
 from data import data_iterator
@@ -11,6 +12,9 @@ import time
 import sys
 import h5py
 from pprint import pprint
+
+def leaky_relu(x, alpha=0.1):
+	return tf.maximum(alpha*x, x)
 
 
 class AttentionNN(object):
@@ -30,10 +34,14 @@ class AttentionNN(object):
 		self.dropout 			   = config.dropout
 		self.random_seed  		   = config.random_seed
 		self.optimizer 		   	   = config.optimizer
+		self.bidirectional 		   = config.bidirectional
+		self.hidden_nonlinearity   = config.hidden_nonlinearity.lower()
+		assert self.hidden_nonlinearity in ["leaky_relu", "relu", "sigmoid", "tanh", "elu", "none"]
 		self.optim 				   = None
 		self.loss                  = None
 
-		self.data_directory 	   = "data_vectors/"
+		self.data_directory 	   = "/deep/group/dlbootcamp/jirvin16/229/data_vectors/"
+		# self.data_directory 	   = "/deep/group/dlbootcamp/jirvin16/229/unique_data_vectors/"
 		self.is_test 			   = config.mode == 1
 		self.validate 			   = config.validate
 		
@@ -49,7 +57,6 @@ class AttentionNN(object):
 		self.num_layers 	       = config.num_layers
 		self.num_genres			   = 10
 
-		
 		if self.is_test:
 			self.dropout = 0
 
@@ -75,25 +82,24 @@ class AttentionNN(object):
 			outfile.flush()
 
 		with h5py.File(os.path.join(self.data_directory, 'data.h5')) as hf:
-			X    		 	 = hf["X"][:]
-			genres 	 		 = hf["y"][:]
-			self.genre_names = hf["genres"][:]
-			self.mean   	 = hf["mean"]
-			self.std    	 = hf["std"]
+			X    		 	   = np.transpose(hf["X"][:], [0, 2, 1])
+			genres 	 		   = hf["y"][:]
+			self.genre_names   = hf["genres"][:]
+			self.mean   	   = hf["mean"]
+			self.std    	   = hf["std"]
 
 		if self.MLP:
-			timestep_X  	  = X
+			X 				   = X.reshape(X.shape[0], X.shape[1] * X.shape[2])
+			self.embedding_dim = X.shape[1]
 		else:
-			assert X.shape[1] % self.embedding_dim == 0
-			timesteps 		  = int(X.shape[1] / self.embedding_dim)
-			self.max_size     = timesteps
-			timestep_X		  = X.reshape(X.shape[0], timesteps, self.embedding_dim)
+			self.max_size      = X.shape[1]
+			self.embedding_dim = X.shape[2]
 
 		np.random.seed(self.random_seed)
 		train_size 	      = int(0.7 * X.shape[0])
-		validation_size   = int(0.15 * X.shape[0])
+		validation_size   = int(0.1 * X.shape[0])
 		permutation 	  = np.random.permutation(X.shape[0])
-		shuffled_X 	      = timestep_X[permutation]
+		shuffled_X 	      = X[permutation]
 		shuffled_genres   = genres[permutation]
 		self.X_train 	  = shuffled_X[:train_size]
 		self.y_train 	  = shuffled_genres[:train_size]
@@ -105,15 +111,12 @@ class AttentionNN(object):
 			self.y_test	  = shuffled_genres[train_size+validation_size:]
 
 		# Model placeholders
-		# Going to need to pad inputs so that they are all the same length
 		if self.MLP:
-			self.embedding_dim = X.shape[1]
 			self.audio_batch   = tf.placeholder(tf.float32, shape=[None, self.embedding_dim], name="audio_batch")
 		else:
 			self.audio_batch   = tf.placeholder(tf.float32, shape=[None, self.max_size, self.embedding_dim], name="audio_batch")
 		self.genres 		   = tf.placeholder(tf.int32, shape=[None])
 		self.dropout_var 	   = tf.placeholder(tf.float32, name="dropout_var")
-		self.batch_size_var    = tf.placeholder(tf.int32, name="batch_size")
 
 	def build_model(self):
 		
@@ -133,9 +136,20 @@ class AttentionNN(object):
 
 			if self.MLP:
 				
-				first_layer = tf.nn.relu(tf.matmul(self.audio_batch, self.W_input) + self.b_input)
+				hidden_output = tf.matmul(self.audio_batch, self.W_input) + self.b_input
+
+				if self.hidden_nonlinearity == "leaky_relu":
+					hidden_output = leaky_relu(hidden_output)
+				elif self.hidden_nonlinearity == "relu":
+					hidden_output = tf.nn.relu(hidden_output)
+				elif self.hidden_nonlinearity == "sigmoid":
+					hidden_output = tf.sigmoid(hidden_output)
+				elif self.hidden_nonlinearity == "tanh":
+					hidden_output = tf.tanh(hidden_output)
+				elif self.hidden_nonlinearity == "elu":
+					hidden_output = tf.nn.elu(hidden_output)
 				
-				self.logits = tf.matmul(first_layer, self.W_output) + self.b_output
+				self.logits = tf.matmul(hidden_output, self.W_output) + self.b_output
 
 			else:
 
@@ -149,36 +163,60 @@ class AttentionNN(object):
 											  initializer=W_initializer)
 					self.ba = tf.get_variable("b_attention", shape=[self.hidden_dim],
 											  initializer=b_initializer)
+
+				if self.bidirectional:
+
+					encode_lstm_fw        = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_dim, 
+																 		 state_is_tuple=True)
+					encode_lstm_fw 		  = tf.nn.rnn_cell.DropoutWrapper(encode_lstm_fw, 
+																	      output_keep_prob=1-self.dropout_var)
+					encode_lstm_bw        = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_dim, 
+																		 state_is_tuple=True)
+					encode_lstm_bw 		  = tf.nn.rnn_cell.DropoutWrapper(encode_lstm_bw, 
+																	      output_keep_prob=1-self.dropout_var)
+					self.bidir_proj       = tf.get_variable("bidir_proj", shape=[2*self.hidden_dim, self.hidden_dim],
+															initializer=initializer)
+					self.bidir_proj_bias  = tf.get_variable("bidir_proj_bias", shape=[self.hidden_dim],
+															initializer=initializer)
 				
-				lstm = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_dim)
+				if self.use_lstm:
+					cell = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_dim)
+
+				else:
+					cell = tf.nn.rnn_cell.BasicRNNCell(self.hidden_dim)
+
 				if self.dropout > 0:
-					lstm = tf.nn.rnn_cell.DropoutWrapper(lstm, output_keep_prob=1-self.dropout)
-				self.multilayer_lstm = tf.nn.rnn_cell.MultiRNNCell([lstm] * self.num_layers)
+					cell = tf.nn.rnn_cell.DropoutWrapper(cell, output_keep_prob=1-self.dropout)
 
-				split_embeddings 	 = tf.split(1, self.max_size, self.audio_batch)
-				
-				initial_hidden_state = self.multilayer_lstm.zero_state(self.batch_size_var, dtype=tf.float32)
-				hidden_state 		 = initial_hidden_state
-				
-				# used for attention
-				hidden_states 		 = []
-				
-				for t in xrange(self.max_size):
-					if t >= 1:
-						tf.get_variable_scope().reuse_variables()
+				split_embeddings = tf.unpack(self.audio_batch, axis=1)
 
-					input_projection 	 = tf.matmul(tf.squeeze(split_embeddings[t], [1]), self.W_input) + self.b_input
-					
-					output, hidden_state = self.multilayer_lstm(input_projection, hidden_state)
+				if self.bidirectional:
 
-					# used for attention
-					hidden_states.append(output)
+					outputs, output_state_fw, output_state_bw = rnn.bidirectional_rnn(encode_lstm_fw, encode_lstm_bw, split_embeddings, dtype=tf.float32)
+
+					projections = tf.matmul(tf.reshape(tf.pack(outputs), [self.max_size * self.batch_size, 2 * self.hidden_dim]), \
+											self.bidir_proj) + self.bidir_proj_bias
+					hidden_states = tf.unpack(tf.reshape(projections, [self.max_size, self.batch_size, self.hidden_dim]), axis=0)
+
+				else:
+
+					hidden_states, state = rnn.rnn(cell, split_embeddings, dtype=tf.float32)
+
+				if self.num_layers == 2:
+
+					cell2 = tf.nn.rnn_cell.BasicLSTMCell(self.hidden_dim)
+
+					if self.dropout > 0:
+						cell2 = tf.nn.rnn_cell.DropoutWrapper(cell2, output_keep_prob=1-self.dropout)
+
+					# state = (c, h), the last memory and hidden states
+					hidden_states, state = rnn.rnn(cell2, hidden_states, dtype=tf.float32, scope="layer2")
 
 				if self.use_attention:
 
 					packed_hidden_states = tf.pack(hidden_states)
 
-					a 					 = tf.matmul(output, self.Wa) + self.ba
+					a 					 = tf.matmul(state[1], self.Wa) + self.ba
 
 					attention_scores  	 = tf.reduce_sum(tf.mul(a, packed_hidden_states), 2) # (M, B)
 
@@ -190,7 +228,7 @@ class AttentionNN(object):
 
 				else:
 
-					h_tilde 			 = output
+					h_tilde 			 = state[1]
 
 				self.logits = tf.matmul(h_tilde, self.W_output) + self.b_output
 				# (B, H) x (H, G) -> (B, G)
@@ -204,10 +242,11 @@ class AttentionNN(object):
 		
 		self.sess.run(tf.initialize_all_variables())
 
-		for var in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES):
-			print(var.name)
-			print(var.get_shape())	
-			sys.stdout.flush()
+		with open(self.outfile, 'a') as outfile:
+			for var in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES):
+				print(var.name, file=outfile)
+				print(var.get_shape(), file=outfile)	
+				outfile.flush()
 
 		self.saver = tf.train.Saver()
 
@@ -222,10 +261,9 @@ class AttentionNN(object):
 										    self.sess.graph)
 
 		i 					= 0
-		previous_train_loss = float("inf")
-		valid_loss 			= float("inf")
-		best_valid_loss     = float("inf")
-		
+		# best_valid_loss       = float("inf")
+		best_valid_accuracy     = 0
+
 		for epoch in xrange(self.epochs):
 
 			train_loss  = 0.0
@@ -234,7 +272,7 @@ class AttentionNN(object):
 			for audio_batch, genres in data_iterator(self.X_train, self.y_train, self.batch_size):
 				
 				feed = {self.audio_batch: audio_batch, self.genres: genres, 
-						self.dropout_var: self.dropout, self.batch_size_var: audio_batch.shape[0]}
+						self.dropout_var: self.dropout}
 
 				_, batch_loss, summary = self.sess.run([self.optim, self.loss, merged_sum], feed)
 
@@ -260,24 +298,30 @@ class AttentionNN(object):
 				outfile.flush()
 			
 			if self.validate:
-				previous_valid_loss = valid_loss
-				valid_loss = self.test()
+				valid_loss, valid_accuracy = self.test()
 
 				# if validation loss increases, halt training
 				# model in previous epoch will be saved in checkpoint
-				# if valid_loss > previous_valid_loss:
-				# 	break
-
-			# Adaptive learning rate
-			if previous_train_loss <= train_loss + 1e-1:
-				self.current_learning_rate /= 2.
-
-			# save model after validation check
-			if (epoch % self.save_every == 0 or epoch == self.epochs - 1) and valid_loss <= best_valid_loss:
-				self.saver.save(self.sess,
-								os.path.join(self.checkpoint_directory, "MemN2N.model")
-								)
-				best_valid_loss = valid_loss
+				# if valid_loss > best_valid_loss:
+				if valid_accuracy < best_valid_accuracy:
+					if tolerance >= 20:
+						break
+					else:
+						tolerance += 1
+				# save model after validation check
+				else:
+					tolerance = 0
+					self.saver.save(self.sess,
+									os.path.join(self.checkpoint_directory, "MemN2N.model")
+									)
+					# best_valid_loss = valid_loss
+					best_valid_accuracy = valid_accuracy
+			
+			else:
+				if epoch % self.save_every == 0:
+					self.saver.save(self.sess,
+									os.path.join(self.checkpoint_directory, "MemN2N.model")
+									)
 
 	def test(self):
 
@@ -293,7 +337,7 @@ class AttentionNN(object):
 		for audio_batch, genres in data_iterator(self.X_test, self.y_test, self.batch_size):
 
 			feed          = {self.audio_batch: audio_batch, self.genres: genres,\
-							 self.dropout_var: 0.0, self.batch_size_var: audio_batch.shape[0]}
+							 self.dropout_var: 0.0}
 
 			loss, logits  = self.sess.run([self.loss, self.logits], feed)
 
@@ -314,7 +358,7 @@ class AttentionNN(object):
 			print(state, file=outfile)
 			outfile.flush()
 
-		return test_loss / num_batches
+		return test_loss / num_batches, num_correct / num_examples
 
 	def run(self):
 		if self.is_test:
